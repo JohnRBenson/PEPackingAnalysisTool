@@ -1,0 +1,23 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.27130.2027
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "PEPackingAnalysisTool", "PEPackingAnalysisTool\PEPackingAnalysisTool.pyproj", "{935866D4-16F5-4E42-9680-4C18D337AC33}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{935866D4-16F5-4E42-9680-4C18D337AC33}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{935866D4-16F5-4E42-9680-4C18D337AC33}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1190A3C9-B2F0-4309-A4A7-B42F5A4A986F}
+	EndGlobalSection
+EndGlobal
