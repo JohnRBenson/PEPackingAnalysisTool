@@ -149,24 +149,6 @@ def main():
     conn = sqlite3.connect(sqliteFile)
     c = conn.cursor()
     c.execute('select sha from sample')
-    '''
-    if c.fetchone():#if the db has values in it, skip loading db
-        NNet = neuralNet()#initialize neural network object
-        #NNet.exePath = samplesPath + "\\" + fileName
-        NNet.conn = conn#pass DB connection
-        NNet.c = c
-        NNet.loadInputNodes()#read data from DB into input array for NNet
-        NNet.trainNNet()#run training with dataframe created
-    else:
-        for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
-            sampleObject = sampleFeatures()#make object
-            sampleObject.exePath = samplesPath + "\\" + fileName#give samples folder
-            sampleObject.conn = conn#pass DB connection
-            sampleObject.c = c
-            print("Reading File Attributes")
-            sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
-        conn.commit()#commit to DB before next step
-    '''
 
     for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
         sampleObject = sampleFeatures()#make object
