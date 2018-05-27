@@ -5,7 +5,10 @@ import requests #for http methods
 import sys      #for exit function
 from time import sleep  #for "wait" functionality
 
-
+'''
+reference research:
+    (1) http://www.sersc.org/journals/IJSIA/vol7_no5_2013/24.pdf (A Heuristics-based Static Analysis Approach for Detecting Packed PE Binaries)
+'''
 '''
 index mapping:
 
@@ -51,13 +54,21 @@ class sampleFeatures:
     peSectionEntropy = ""
     peSectionDict = {}
     peSectionArray = []
+    #heuristics
+    containsCodeSection = ""
     #pe imports
     peLibraryName = ""
     peFunctionName = ""
     peFunctionAddress = ""
+    peNumberOfImports = ""
+    peImportDict = {}
+    peImportArray = []
     #pe exports
     peExportName = ""
     peExportAddress = ""
+    peNumberOfExports = ""
+    peExportDict = {}
+    peExportArray = []
 
 
     def getSampleFeatures(self):
@@ -88,6 +99,13 @@ class sampleFeatures:
             '''
             self.peSectionEntropy = section.get_entropy()#get entropy (0-8)
 
+            #check for the code section, this is a heuristic explained in (1)
+            if self.peSectionName == 'CODE':
+                self.containsCodeSection = True
+            else:
+                self.containsCodeSection = False
+
+
             #create dict and add that to an array
             self.peSectionDict = {'sectionName' : self.peSectionName,
                                   'sectionEntropy' : self.peSectionEntropy}
@@ -95,6 +113,7 @@ class sampleFeatures:
 
         try:
             #import data
+            self.peNumberOfImports = 0
             for entry in self.pe.DIRECTORY_ENTRY_IMPORT:
                 self.stringHolder = entry.dll.decode('utf-8')#name data is in utf-8 format
                 self.peLibraryName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
@@ -103,19 +122,29 @@ class sampleFeatures:
                     self.stringHolder = func.name.decode('utf-8')#name data is in utf-8 format
                     self.peFunctionName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
                     #self.peFunctionAddress = hex(func.address)#get address
+                    self.peImportDict = {'libraryName' : self.peLibraryName,
+                                         'functionName' : self.peFunctionName}
+                    self.peImportArray.append(dict(self.peImportDict))
+                    self.peNumberOfImports += 1
         except:
             print('No Import Data')
+            self.peNumberOfImports = 0
        
 
         try:
             #export data
+            self.peNumberOfExports = 0
             for exp in self.pe.DIRECTORY_ENTRY_EXPORT.symbols:#loop through exports
                 self.stringHolder = exp.name.decode('utf-8')#name data is in utf-8 format
                 self.peExportName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
                 #self.peExportAddress = hex(self.pe.OPTIONAL_HEADER.ImageBase + exp.address)#get export address
+                self.peExportDict = {'exportName' : self.peExportName}
+                self.peExportArray.append(dict(self.peExportDict))
+                self.peNumberOfExports += 1
 
         except:
             print('No Export Data')
+            self.peNumberOfExports = 0
         
         #build features for the body of ES document
         self.features = {
@@ -124,6 +153,11 @@ class sampleFeatures:
             'addressOfEntry' : self.peEntryAddress,
             }
         self.features.update({'sectionData' : self.peSectionArray})#sectionData is nested type, peSectionArray is an array of dictionary entries
+        self.features.update({'containsCodeSection' : self.containsCodeSection})
+        self.features.update({'importData' : self.peImportArray})
+        self.features.update({'numberOfImports' : self.peNumberOfImports})
+        self.features.update({'exportData' : self.peExportArray})
+        self.features.update({'numberOfExports' : self.peNumberOfExports})
         #print (self.features)
         self.es.create(index='samples', doc_type='sample', id=self.sampleIDCounter, body=self.features)#create document with attributes pulled from sample
         
