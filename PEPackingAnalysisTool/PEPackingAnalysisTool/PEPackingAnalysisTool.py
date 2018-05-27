@@ -1,21 +1,43 @@
-import sqlite3  #for db manipulation
 import pefile   #for PE file manipulation, must install package (https://github.com/erocarrera/pefile)
-import hashlib  #for sha-256 hash generation
 import os       #for file/directory manipulation
+from elasticsearch import Elasticsearch #plugin to interact with elsaticsearch DB
+import requests #for http methods
+import sys      #for exit function
+from time import sleep  #for "wait" functionality
 
 
+'''
+index mapping:
+
+PUT /samples
+{
+  "mappings": {
+    "sample": {
+      "properties": {
+        "fileName":{"type":"text"},
+        "numberOfSections":{"type":"integer"},
+        "addressOfEntry":{"type":"text"},
+        "sectionData":{"type": "nested",
+          "properties": {
+            "sectionName":{"type":"text"},
+            "sectionEntropy":{"type":"float"}
+          }
+        }
+      }
+    }
+  }
+}
+'''
 class sampleFeatures:
-    #database variables
-    sqliteFile = ""
-    exePath = ""
-    c = ""
-    conn = ""
+    #elasticstack variables
+    es = ""
+    sampleIDCounter = ""
+    features = {}
     #holder variables
-    IDHolderList = ""
-    IDHolder = ""
     stringHolder = ""
-    #sha variable
-    sha256 = ""
+    #file variables
+    exePath = ""
+    fileName = ""
     #pe variables
     pe = ""
     peSignature = ""
@@ -27,6 +49,8 @@ class sampleFeatures:
     peSectionVirtualSize = ""
     peSectionRawSize = ""
     peSectionEntropy = ""
+    peSectionDict = {}
+    peSectionArray = []
     #pe imports
     peLibraryName = ""
     peFunctionName = ""
@@ -36,24 +60,7 @@ class sampleFeatures:
     peExportAddress = ""
 
 
-
-    def sha256Sum(self, fileName, blockSize=65536):
-        hash = hashlib.sha256()
-        with open(fileName, "rb") as f:
-            for block in iter(lambda: f.read(blockSize), b""):
-                hash.update(block)
-        return hash.hexdigest()
-
-    def dbInsert(self, c, table, row):
-        #print("Inserting")
-        cols = ', '.join('"{}"'.format(col) for col in row.keys())
-        vals = ', '.join(':{}'.format(col) for col in row.keys())
-        sql = 'INSERT INTO "{0}" ({1}) VALUES ({2})'.format(table, cols, vals)
-        self.c.execute(sql, row)
-        self.conn.commit()
-
     def getSampleFeatures(self):
-        self.sha256 = self.sha256Sum(self.exePath)#get sha256 hash
         try:
             self.pe = pefile.PE(self.exePath)
         except OSError as e:
@@ -66,18 +73,6 @@ class sampleFeatures:
             print('No Signature')
         self.peNumberOfSections = self.pe.FILE_HEADER.NumberOfSections#get number of sections
         self.peEntryAddress = hex(self.pe.OPTIONAL_HEADER.AddressOfEntryPoint)#get address of entry
-        #save to sample table: sha256, signature, number of sections, address of entry
-        self.dbInsert(self.c, 'sample', {
-                'sha': self.sha256,
-                'peSignature': self.peSignature,
-                'peNumberOfSections': self.peNumberOfSections,
-                'peAddressOfEntry': self.peEntryAddress})
-
-        #get the id for the current sample
-        self.c.execute('select id from sample where sha="' + self.sha256 + '"')
-        self.IDHolderList = self.c.fetchall()
-        self.IDHolder = str(self.IDHolderList[0])
-        self.IDHolder = self.IDHolder.strip('(),')#remove other characters from the retrieved list value
 
         #pe section data
         for section in self.pe.sections:#loop through all sections
@@ -86,19 +81,18 @@ class sampleFeatures:
                 self.peSectionName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
             except:
                 self.peSectionName = section.Name
+            '''
             self.peSectionVirtualAddress = hex(section.VirtualAddress)#get VA of section
             self.peSectionVirtualSize = hex(section.Misc_VirtualSize)#get virtual size of section
             self.peSectionRawSize = hex(section.SizeOfRawData)#get size of raw data
+            '''
             self.peSectionEntropy = section.get_entropy()#get entropy (0-8)
 
-            #save to section table: current sample ID (for connecting sample table to section table), section name, VA, VS, Raw Size, section entropy
-            self.dbInsert(self.c, 'section', {
-                    'sampleID': self.IDHolder,
-                    'name': self.peSectionName,
-                    'virtualAddress': self.peSectionVirtualAddress,
-                    'virtualSize': self.peSectionVirtualSize,
-                    'rawSize': self.peSectionRawSize,
-                    'entropy': self.peSectionEntropy})
+            #create dict and add that to an array
+            self.peSectionDict = {'sectionName' : self.peSectionName,
+                                  'sectionEntropy' : self.peSectionEntropy}
+            self.peSectionArray.append(dict(self.peSectionDict))
+
         try:
             #import data
             for entry in self.pe.DIRECTORY_ENTRY_IMPORT:
@@ -108,61 +102,72 @@ class sampleFeatures:
                 for func in entry.imports:#loop through all imports
                     self.stringHolder = func.name.decode('utf-8')#name data is in utf-8 format
                     self.peFunctionName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
-                    self.peFunctionAddress = hex(func.address)#get address
-
-                    #save to import table: current sample ID (for connecting sample table to section table), library name (dlls), function name, function address
-                    self.dbInsert(self.c, 'import', {
-                            'sampleID': self.IDHolder,
-                            'libraryName': self.peLibraryName,
-                            'functionName': self.peFunctionName,
-                            'functionAddress': self.peFunctionAddress})
+                    #self.peFunctionAddress = hex(func.address)#get address
         except:
             print('No Import Data')
        
-        #print(self.pe.dump_info())
 
         try:
             #export data
             for exp in self.pe.DIRECTORY_ENTRY_EXPORT.symbols:#loop through exports
                 self.stringHolder = exp.name.decode('utf-8')#name data is in utf-8 format
                 self.peExportName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
-                self.peExportAddress = hex(self.pe.OPTIONAL_HEADER.ImageBase + exp.address)#get export address
+                #self.peExportAddress = hex(self.pe.OPTIONAL_HEADER.ImageBase + exp.address)#get export address
 
-                #save to export table: current sample ID (for connecting sample table to section table), export name, export address
-                self.dbInsert(self.c, 'export', {
-                        'sampleID': self.IDHolder,
-                        'name': self.peExportName,
-                        'address': self.peExportAddress})
         except:
             print('No Export Data')
-            
+        
+        #build features for the body of ES document
+        self.features = {
+            'fileName' : self.fileName,
+            'numberOfSections' : self.peNumberOfSections,
+            'addressOfEntry' : self.peEntryAddress,
+            }
+        self.features.update({'sectionData' : self.peSectionArray})#sectionData is nested type, peSectionArray is an array of dictionary entries
+        #print (self.features)
+        self.es.create(index='samples', doc_type='sample', id=self.sampleIDCounter, body=self.features)#create document with attributes pulled from sample
+        
         
 
 
 def main():
-    startTime = datetime.now()
     path = os.getcwd()
-    sqliteFile = path + "\\database.sqlite"
     samplesPath = path + '\\samples'
 
-    #connect to DB
-    conn = sqlite3.connect(sqliteFile)
-    c = conn.cursor()
-    c.execute('select sha from sample')
+    #check for elasticsearch server
+    try:
+        res = requests.get('http://localhost:9200')
+    except:
+        print('Could not reach elasticsearch at localhost:9200, quitting in 3 seconds...')
+        sleep(3)
+        sys.exit()
+
+    try:
+        os.listdir(samplesPath)
+    except:
+        print('Samples folder could not be found, quitting in 3 seconds...')
+        sleep(3)
+        sys.exit()
+
+    #connect to local elasticsearch server using elasticsearch-py
+    es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
+
+    sampleIDCounter=1
 
     for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
         sampleObject = sampleFeatures()#make object
-        sampleObject.exePath = samplesPath + "\\" + fileName#give samples folder
-        sampleObject.conn = conn#pass DB connection
-        sampleObject.c = c
-        print('Non Threaded Reading ' + fileName + '...')
+        sampleObject.es = es#pass ES connection variable
+        sampleObject.sampleIDCounter = sampleIDCounter#pass ID counter for id field
+        sampleIDCounter += 1
+        sampleObject.exePath = samplesPath + "\\" + fileName#give full sample path
+        sampleObject.fileName = fileName#pass the file name
+        print('Reading ' + fileName + '...')
         sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
-
-    conn.commit()
-    conn.close()
-    timeElapsed = datetime.now() - startTime 
-    print('Time elpased (hh:mm:ss.ms) {}'.format(timeElapsed))
-
+    
+    '''
+    res = es.get(index='samples')
+    print(res)
+    '''
 
 if __name__ == '__main__':
     main()
