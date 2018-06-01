@@ -2,6 +2,7 @@ import pefile   #for PE file manipulation, must install package (https://github.
 import os       #for file/directory manipulation
 from elasticsearch import Elasticsearch #plugin to interact with elsaticsearch DB
 import requests #for http methods
+import json     #to work with json formats and objects
 import sys      #for exit function
 from time import sleep  #for "wait" functionality
 
@@ -23,10 +24,17 @@ PUT /samples
         "sectionData":{"type": "nested",
           "properties": {
             "sectionName":{"type":"text"},
-            "sectionEntropy":{"type":"float"}
+            "sectionEntropy":{"type":"float"},
+            "sectionRead":{"type":"boolean"},
+            "sectionWrite":{"type":"boolean"},
+            "sectionExecute":{"type":"boolean"},
+            "sectionContainsCode":{"type":"boolean"},
+            "sectionContainsData":{"type":"boolean"}
           }
         },
-        "containsCodeSection":{"type":"boolean"},
+        "containsNamedCodeSection":{"type":"boolean"},
+        "nonExecutableCodeSection":{"type":"boolean"},
+        "executableDataSection":{"type":"boolean"},
         "importData":{"type": "nested",
           "properties": {
             "libraryName":{"type":"text"},
@@ -62,6 +70,11 @@ class sampleFeatures:
     peEntryAddress = ""
     #pe sections
     peSectionName = ""
+    peSectionRead = ""
+    peSectionWrite = ""
+    peSectionExecute = ""
+    peSectionContainsCode = ""
+    peSectionContainsInitData = ""
     peSectionVirtualAddress = ""
     peSectionVirtualSize = ""
     peSectionRawSize = ""
@@ -69,7 +82,9 @@ class sampleFeatures:
     peSectionDict = {}
     peSectionArray = []
     #heuristics
-    containsCodeSection = ""
+    containsNamedCodeSection = ""
+    nonExecutableCodeSection = ""
+    executableDataSection = ""
     #pe imports
     peLibraryName = ""
     peFunctionName = ""
@@ -100,29 +115,75 @@ class sampleFeatures:
         self.peEntryAddress = hex(self.pe.OPTIONAL_HEADER.AddressOfEntryPoint)#get address of entry
 
         #pe section data
+        sectionPermissions = pefile.retrieve_flags(pefile.SECTION_CHARACTERISTICS, 'IMAGE_SCN_')#returns list of section flags from dict defined in pefile.py
         for section in self.pe.sections:#loop through all sections
             try:
                 self.stringHolder = section.Name.decode('utf-8')#name data is in utf-8 format
                 self.peSectionName = self.stringHolder.replace('\x00', '')#remove extra zero hex values from name
             except:
                 self.peSectionName = section.Name
+
             '''
             self.peSectionVirtualAddress = hex(section.VirtualAddress)#get VA of section
             self.peSectionVirtualSize = hex(section.Misc_VirtualSize)#get virtual size of section
             self.peSectionRawSize = hex(section.SizeOfRawData)#get size of raw data
             '''
+
+            '''adds permissions to list for each section but not used as a feature in ES document, object flags are set accordingly and used as features'''
+            permissions = []
+            for permission in sorted(sectionPermissions):
+                if getattr(section, permission[0]):
+                    permissions.append(permission[0])
+                    if (permission[0] == 'IMAGE_SCN_MEM_READ'):
+                        self.peSectionRead = True
+                    else:
+                        self.peSectionRead = False
+                    if (permission[0] == 'IMAGE_SCN_MEM_WRITE'):
+                        self.peSectionWrite = True
+                    else:
+                        self.peSectionWrite = False
+                    if (permission[0] == 'IMAGE_SCN_MEM_EXECUTE'):
+                        self.peSectionExecute = True
+                    else:
+                        self.peSectionExecute = False
+                    if (permission[0] == 'IMAGE_SCN_CNT_CODE'):
+                        self.peSectionContainsCode = True
+                    else:
+                        self.peSectionContainsCode = False
+                    if (permission[0] == 'IMAGE_SCN_CNT_INITIALIZED_DATA'):
+                        self.peSectionContainsInitData = True
+                    else:
+                        self.peSectionContainsInitData = False
+
+            '''If a section contains code but is not executable, this is a sign of packing.  This is a heuristic explained in (1)'''
+            if (self.peSectionContainsCode == True & self.peSectionExecute == False):
+                self.nonExecutableCodeSection = True
+            else:
+                self.nonExecutableCodeSection = False
+
+            '''If a section contains initialized data and is executable, this is a sign of packing.  This is a heuristic explained in (1)'''
+            if (self.peSectionContainsInitData == True & self.peSectionExecute == True):
+                self.executableDataSection = True
+            else:
+                self.executableDataSection = False
+
             self.peSectionEntropy = section.get_entropy()#get entropy (0-8)
 
             #check for the code section, this is a heuristic explained in (1)
             if self.peSectionName == 'CODE':
-                self.containsCodeSection = True
+                self.containsNamedCodeSection = True
             else:
-                self.containsCodeSection = False
+                self.containsNamedCodeSection = False
 
 
             #create dict and add that to an array
             self.peSectionDict = {'sectionName' : self.peSectionName,
-                                  'sectionEntropy' : self.peSectionEntropy}
+                                  'sectionEntropy' : self.peSectionEntropy,
+                                  'sectionRead' : self.peSectionRead,
+                                  'sectionWrite' : self.peSectionWrite,
+                                  'sectionExecute' : self.peSectionExecute,
+                                  'sectionContainsCode' : self.peSectionContainsCode,
+                                  'sectionContainsData' : self.peSectionContainsInitData}
             self.peSectionArray.append(dict(self.peSectionDict))
 
         try:
@@ -166,11 +227,13 @@ class sampleFeatures:
             'numberOfSections' : self.peNumberOfSections,
             'addressOfEntry' : self.peEntryAddress,
             }
-        self.features.update({'sectionData' : self.peSectionArray})#sectionData is nested type, peSectionArray is an array of dictionary entries
-        self.features.update({'containsCodeSection' : self.containsCodeSection})
-        self.features.update({'importData' : self.peImportArray})
+        self.features.update({'sectionData' : self.peSectionArray})#sectionData is a nested object, peSectionArray is an array of dictionary entries
+        self.features.update({'containsNamedCodeSection' : self.containsNamedCodeSection})
+        self.features.update({'nonExecutableCodeSection' : self.nonExecutableCodeSection})
+        self.features.update({'executableDataSection' : self.executableDataSection})
+        self.features.update({'importData' : self.peImportArray})#nested object
         self.features.update({'numberOfImports' : self.peNumberOfImports})
-        self.features.update({'exportData' : self.peExportArray})
+        self.features.update({'exportData' : self.peExportArray})#nested object
         self.features.update({'numberOfExports' : self.peNumberOfExports})
         #print (self.features)
         self.es.create(index='samples', doc_type='sample', id=self.sampleIDCounter, body=self.features)#create document with attributes pulled from sample
@@ -201,7 +264,7 @@ def main():
     es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
 
     sampleIDCounter=1
-
+    
     for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
         sampleObject = sampleFeatures()#make object
         sampleObject.es = es#pass ES connection variable
@@ -212,10 +275,27 @@ def main():
         print('Reading ' + fileName + '...')
         sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
     
-    '''
-    res = es.get(index='samples')
-    print(res)
-    '''
+
+    payload = {
+        "query": {
+        "nested": {
+          "path": "sectionData",
+          "query": {
+            "bool": {
+              "must": [
+                {
+                  "match": {
+                    "sectionData.sectionName": "CODE"
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }}
+    res = requests.get('http://localhost:9200/samples/sample/_search', json = payload)
+
+    print(res.json()['hits']['hits'][0]['_source']['fileName'])
 
 if __name__ == '__main__':
     main()
