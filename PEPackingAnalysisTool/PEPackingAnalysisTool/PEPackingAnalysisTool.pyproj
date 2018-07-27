@@ -12,6 +12,9 @@
     <Name>PEPackingAnalysisTool</Name>
     <RootNamespace>PEPackingAnalysisTool</RootNamespace>
     <InterpreterId>Global|PythonCore|3.6</InterpreterId>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <CommandLineArguments>-o reset</CommandLineArguments>
+    <EnableNativeCodeDebugging>False</EnableNativeCodeDebugging>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
