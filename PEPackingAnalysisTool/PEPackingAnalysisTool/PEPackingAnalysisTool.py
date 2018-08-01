@@ -27,26 +27,29 @@ class sampleFeatures:
     peSignature = ""
     peNumberOfSections = ""
     peEntryAddress = ""
+    peImageBase = ""
     #pe sections
     peSectionName = ""
+    peSectionVirtualAddress = ""
+    peSectionVirtualSize = ""
+    peSectionRawSize = ""
+    peSectionIsEntryPoint = False
     peSectionNameDescription = ""
     peSectionRead = ""
     peSectionWrite = ""
     peSectionExecute = ""
     peSectionContainsCode = ""
     peSectionContainsInitData = ""
-    peSectionVirtualAddress = ""
-    peSectionVirtualSize = ""
-    peSectionRawSize = ""
     peSectionEntropy = ""
     peSectionDict = {}
     peSectionArray = []
     #heuristics
-    packerSectionName = False
-    unknownSectionName = False
-    containsNamedCodeSection = ""
-    nonExecutableCodeSection = ""
-    executableDataSection = ""
+    packerSectionName = False       #Sign of packing
+    unknownSectionName = False      #Possible packing
+    numberOfUnknownSections = 0     #Higher num of unknown section names, higher packing probability
+    containsNamedCodeSection = False   #if no named code section, then sign of packing
+    nonExecutableCodeSection = False   #Sign of packing
+    executableDataSection = False      #Sign of packing
     #pe imports
     peLibraryName = ""
     peFunctionName = ""
@@ -244,8 +247,13 @@ class sampleFeatures:
             print('No Signature')
         self.peNumberOfSections = self.pe.FILE_HEADER.NumberOfSections#get number of sections
         self.peEntryAddress = hex(self.pe.OPTIONAL_HEADER.AddressOfEntryPoint)#get address of entry
+        self.peImageBase = hex(self.pe.OPTIONAL_HEADER.ImageBase)#get Image Base
 
         #pe section data
+        '''fix for issue where object data would be kept even after the object was deleted'''
+        self.peSectionDict.clear()
+        self.peSectionArray = []
+
         sectionPermissions = pefile.retrieve_flags(pefile.SECTION_CHARACTERISTICS, 'IMAGE_SCN_')#returns list of section flags from dict defined in pefile.py
         for section in self.pe.sections:#loop through all sections
             try:
@@ -254,12 +262,16 @@ class sampleFeatures:
             except:
                 self.peSectionName = section.Name
 
-            '''
             self.peSectionVirtualAddress = hex(section.VirtualAddress)#get VA of section
+
+            #check if section is at entry point, this is a heuristic explained in (1)
+            if self.peSectionVirtualAddress == (self.peEntryAddress + self.peImageBase):
+                self.peSectionIsEntryPoint = True
+
             self.peSectionVirtualSize = hex(section.Misc_VirtualSize)#get virtual size of section
             self.peSectionRawSize = hex(section.SizeOfRawData)#get size of raw data
-            '''
-            #Add descriptions for section names if known, check for common packer names and non-packer names
+
+            #Add descriptions for section names if known, check for common packer names and non-packer names. This is a heuristic explained in (1)
             if self.peSectionName in self.packerSections:
                 self.peSectionNameDescription = self.packerSections[self.peSectionName]
                 self.packerSectionName = True
@@ -268,6 +280,7 @@ class sampleFeatures:
             else:
                 self.peSectionNameDescription = 'unknown'
                 self.unknownSectionName = True
+                self.numberOfUnknownSections += 1
 
             '''adds permissions to list for each section but not used as a feature in ES document, object flags are set accordingly and used as features'''
             permissions = []
@@ -298,13 +311,13 @@ class sampleFeatures:
             '''If a section contains code but is not executable, this is a sign of packing.  This is a heuristic explained in (1)'''
             if (self.peSectionContainsCode == True & self.peSectionExecute == False):
                 self.nonExecutableCodeSection = True
-            else:
+            elif self.nonExecutableCodeSection == False:
                 self.nonExecutableCodeSection = False
 
             '''If a section contains initialized data and is executable, this is a sign of packing.  This is a heuristic explained in (1)'''
             if (self.peSectionContainsInitData == True & self.peSectionExecute == True):
                 self.executableDataSection = True
-            else:
+            elif self.executableDataSection == False:
                 self.executableDataSection = False
 
             self.peSectionEntropy = section.get_entropy()#get entropy (0-8)
@@ -312,12 +325,16 @@ class sampleFeatures:
             #check for the code section, this is a heuristic explained in (1)
             if self.peSectionName == 'CODE':
                 self.containsNamedCodeSection = True
-            else:
+            elif self.containsNamedCodeSection == False:
                 self.containsNamedCodeSection = False
 
 
             #create dict and add that to an array
             self.peSectionDict = {'sectionName' : self.peSectionName,
+                                  'sectionVirtualAddress' : self.peSectionVirtualAddress,
+                                  'sectionVirtualSize' : self.peSectionVirtualSize,
+                                  'sectionRawSize' : self.peSectionRawSize,
+                                  'sectionIsEntryPoint' : self.peSectionIsEntryPoint,
                                   'sectionDescription' : self.peSectionNameDescription,
                                   'sectionEntropy' : self.peSectionEntropy,
                                   'sectionRead' : self.peSectionRead,
@@ -367,6 +384,7 @@ class sampleFeatures:
             'fileName' : self.fileName,
             'numberOfSections' : self.peNumberOfSections,
             'addressOfEntry' : self.peEntryAddress,
+            'imageBase' : self.peImageBase
             }
         self.features.update({'sectionData' : self.peSectionArray})#sectionData is a nested object, peSectionArray is an array of dictionary entries
         self.features.update({'packerSectionName' : self.packerSectionName})
@@ -391,9 +409,14 @@ def main(argv):
                 "fileName":{"type":"text"},
                 "numberOfSections":{"type":"integer"},
                 "addressOfEntry":{"type":"text"},
+                "imageBase":{"type":"text"},
                 "sectionData":{"type": "nested",
                   "properties": {
                     "sectionName":{"type":"text"},
+                    "sectionVirtualAddress":{"type":"text"},
+                    "sectionVirtualSize":{"type":"text"},
+                    "sectionRawSize":{"type":"text"},
+                    "sectionIsEntryPoint":{"type":"boolean"},
                     "sectionDescription":{"type":"text"},
                     "sectionEntropy":{"type":"float"},
                     "sectionRead":{"type":"boolean"},
@@ -439,9 +462,9 @@ def main(argv):
             choice = input('Are you sure you want to delete all sample data in database?  This CANNOT be undone. (Y/N): ')
             if choice == 'Y' or choice == 'y':
                 res = requests.delete('http://localhost:9200/samples')
-                print(res)
+                print(res.text)
                 res = requests.put('http://localhost:9200/samples', json = mapping)
-                print(res)
+                print(res.text)
             else:
                 print('Deletion request canceled')
                 sys.exit(2)
@@ -477,6 +500,7 @@ def main(argv):
         sampleObject.fileName = fileName#pass the file name
         print('Reading ' + fileName + '...')
         sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
+        del(sampleObject)
     
     payload = {
         "query": {
@@ -487,7 +511,7 @@ def main(argv):
               "must": [
                 {
                   "match": {
-                    "sectionData.sectionName": "CODE"
+                    "sectionData.sectionName": ".text"
                   }
                 }
               ]
@@ -496,7 +520,7 @@ def main(argv):
         }
       }
     }
-    choice = input('Run a test query to return first filename with a CODE section (ensures nested loop is functioning)? (Y/N): ')
+    choice = input('Run a test query to return first filename with .text section (ensures nested loop is functioning)? (Y/N): ')
     if choice == 'Y' or choice == 'y':
         res = requests.get('http://localhost:9200/samples/sample/_search', json = payload)
         print(res.json()['hits']['hits'][0]['_source']['fileName'])
