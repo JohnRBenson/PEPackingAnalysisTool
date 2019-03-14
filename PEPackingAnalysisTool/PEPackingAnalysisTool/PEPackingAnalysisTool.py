@@ -7,6 +7,7 @@ import json     #to work with json formats and objects
 import sys      #for exit function
 from time import sleep  #for "wait" functionality
 import getopt   #command line options
+import hashlib  #for creating md5 hash
 
 '''
 reference research:
@@ -22,6 +23,7 @@ class sampleFeatures:
     #file variables
     exePath = ""
     fileName = ""
+    md5 = ""
     #pe variables
     pe = ""
     peSignature = ""
@@ -64,7 +66,7 @@ class sampleFeatures:
     peExportDict = {}
     peExportArray = []
 
-    #Section names know to be linked to packers
+    #Section names known to be linked to packers
     #http://www.hexacorn.com/blog/2016/12/15/pe-section-names-re-visited/
     packerSections = {
         '.aspack': 'Aspack packer',
@@ -381,7 +383,9 @@ class sampleFeatures:
         
         #build features for the body of ES document
         self.features = {
+            'ID' : self.sampleIDCounter,
             'fileName' : self.fileName,
+            'md5' : self.md5,
             'numberOfSections' : self.peNumberOfSections,
             'addressOfEntry' : self.peEntryAddress,
             'imageBase' : self.peImageBase
@@ -406,7 +410,9 @@ def main(argv):
           "mappings": {
             "sample": {
               "properties": {
+                "ID":{"type":"integer"},
                 "fileName":{"type":"text"},
+                "md5":{"type":"text"},
                 "numberOfSections":{"type":"integer"},
                 "addressOfEntry":{"type":"text"},
                 "imageBase":{"type":"text"},
@@ -449,6 +455,7 @@ def main(argv):
             }
           }
         }
+
     try:
         opts, args = getopt.getopt(argv,'ho:',['reset='])
     except getopt.GetoptError:
@@ -456,7 +463,7 @@ def main(argv):
         sys.exit(2)
     for opt, arg in opts:
         if opt == '-h':
-            print ('-o reset to delete the samples table')
+            print ('[-o reset] to delete the samples table')
             sys.exit(2)
         elif opt in ('-o','--reset'):
             choice = input('Are you sure you want to delete all sample data in database?  This CANNOT be undone. (Y/N): ')
@@ -467,7 +474,7 @@ def main(argv):
                 print(res.text)
             else:
                 print('Deletion request canceled')
-                sys.exit(2)
+                #sys.exit(2)
     path = os.getcwd()
     samplesPath = path + '\\samples'
 
@@ -488,19 +495,46 @@ def main(argv):
 
     #connect to local elasticsearch server using elasticsearch-py
     es = Elasticsearch([{'host': 'localhost', 'port': 9200}])
-
-    sampleIDCounter=1
     
-    for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
-        sampleObject = sampleFeatures()#make object
-        sampleObject.es = es#pass ES connection variable
-        sampleObject.sampleIDCounter = sampleIDCounter#pass ID counter for id field
+    payload = {
+        "aggs" : {
+        "maxID" : { "max" : { "field" : "ID" } }
+        }
+    }
+    res = requests.get('http://localhost:9200/samples/_search', json = payload)
+    sampleIDCounter = res.json()['aggregations']['maxID']['value']
+    
+    #if there are samples in the DB, then increment to the next sample ID
+    if sampleIDCounter:
         sampleIDCounter += 1
-        sampleObject.exePath = samplesPath + "\\" + fileName#give full sample path
-        sampleObject.fileName = fileName#pass the file name
-        print('Reading ' + fileName + '...')
-        sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
-        del(sampleObject)
+    else:
+        sampleIDCounter=1
+
+    for fileName in os.listdir(samplesPath):#loops through all samples in samples folder
+        hash = hashlib.md5(open(samplesPath + "\\" + fileName,'rb').read()).hexdigest()#get hash of sample
+        payload = {
+        "query": {
+                  "match": {
+                    "md5": hash
+                  }
+             }
+        }
+        res = requests.get('http://localhost:9200/samples/_search', json = payload)
+        #print (res.json()['hits']['total'])
+        if (res.json()['hits']['total']) == 0:#if there are no matches to the current sample's hash then load sample
+            sampleObject = sampleFeatures()#make object
+            sampleObject.es = es#pass ES connection variable
+            sampleObject.sampleIDCounter = sampleIDCounter#pass ID counter for id field
+            sampleIDCounter += 1
+            sampleObject.exePath = samplesPath + "\\" + fileName#give full sample path
+            sampleObject.fileName = fileName#pass the file name
+            sampleObject.md5 = hash#pass the md5 hash
+            print('Reading ' + fileName + '...')
+            sampleObject.getSampleFeatures()#run getSampleFeatures on current sample
+            del(sampleObject)
+        else:
+            print(fileName + ' already in database')
+        
     
     payload = {
         "query": {
